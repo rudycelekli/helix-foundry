@@ -1,10 +1,26 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [validation/posthog-default-invalid-history-20261010]
+permissions:
+  contents: read
+env:
+  APP_SHA: 5c7fc49a385895547e6d9a7e85e5538844526ae1
+  BASE_SHA: 84899851d845d1db98f9e328634f14e0ed4ad7b7
+  CI_SHA: ${{ github.sha }}
+defaults:
+  run:
+    shell: bash
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 5c7fc49a385895547e6d9a7e85e5538844526ae1
+          fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0
@@ -12,7 +28,84 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - name: Verify immutable source identity
+        run: |
+          VERIFY_DIR="$RUNNER_TEMP/posthog-history-verification"
+          mkdir -p "$VERIFY_DIR"
+          echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$APP_SHA"
+          test "$(git rev-parse "$CI_SHA^")" = "$APP_SHA"
+          git diff --exit-code "$APP_SHA" "$CI_SHA" -- . ':(exclude).github/workflows/ci.yml'
+          printf 'application=%s\nvalidation=%s\nbase=%s\ntree=%s\n' "$APP_SHA" "$CI_SHA" "$BASE_SHA" "$(git rev-parse HEAD^{tree})" > "$VERIFY_DIR/identity.txt"
+          sha256sum apps/api/src/posthog.ts tests/posthog.test.ts pnpm-lock.yaml > "$VERIFY_DIR/application.sha256"
+          node --version | tee "$VERIFY_DIR/node-version.txt"
+          pnpm --version | tee "$VERIFY_DIR/pnpm-version.txt"
+      - name: Install exact locked dependencies
+        run: pnpm install --frozen-lockfile 2>&1 | tee "$VERIFY_DIR/install.log"
+      - name: Prove exact intended baseline failures
+        run: |
+          test -f node_modules/vitest/vitest.mjs
+          restore() { git checkout "$APP_SHA" -- apps/api/src/posthog.ts; }
+          trap restore EXIT
+          git show "$BASE_SHA:apps/api/src/posthog.ts" > apps/api/src/posthog.ts
+          set +e
+          node node_modules/vitest/vitest.mjs run tests/posthog.test.ts --reporter=json --outputFile="$VERIFY_DIR/baseline.json" > "$VERIFY_DIR/baseline.log" 2>&1
+          result=$?
+          set -e
+          cat "$VERIFY_DIR/baseline.log"
+          test "$result" = 1
+          node --input-type=module - <<'JS' | tee "$VERIFY_DIR/baseline-classified.txt"
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const data = JSON.parse(readFileSync(process.env.VERIFY_DIR + '/baseline.json', 'utf8'));
+          const prefix = 'preserves PostHog history defaults and clamps: ';
+          const failed = ['nonnumeric text', 'NaN text'].map(label => prefix + label);
+          const controls = ['absent', 'null', 'cleared', 'numeric zero', 'text zero', 'negative', 'text overrange', 'numeric overrange', 'positive infinity text', 'negative infinity text', 'numeric text'].map(label => prefix + label);
+          const existing = ['finds the project and lists queryable objects', 'pages persons with keyset queries', 'imports recent events day by day and names group types', 'refreshes every six hours'];
+          const results = data.testResults.flatMap(suite => suite.assertionResults);
+          assert.equal(data.numTotalTests, 17);
+          assert.equal(data.numFailedTests, 2);
+          assert.equal(data.numPassedTests, 15);
+          assert.equal(data.numPendingTests, 0);
+          assert.equal(data.numTodoTests, 0);
+          assert.equal(data.numPendingTestSuites, 0);
+          assert.equal(data.testResults.length, 1);
+          assert.equal(data.testResults[0].message, '');
+          assert.equal(results.length, 17);
+          assert.deepEqual(results.map(result => result.title).sort(), [...failed, ...controls, ...existing].sort());
+          for (const result of results) {
+            if (failed.includes(result.title)) {
+              assert.equal(result.status, 'failed');
+              const message = result.failureMessages.join('\n');
+              for (const marker of ['AssertionError', 'to deeply equal', 'e1', 'e2', 'e3']) assert.ok(message.includes(marker), result.title + ': ' + message);
+            } else {
+              assert.equal(result.status, 'passed', result.title);
+              assert.equal(result.failureMessages.length, 0, result.title);
+            }
+          }
+          const log = readFileSync(process.env.VERIFY_DIR + '/baseline.log', 'utf8');
+          assert.ok(!/Unhandled Errors|Unhandled Rejection|Uncaught Exception|Failed Suites|ERR_MODULE_NOT_FOUND|Cannot find module/.test(log), 'Unexpected infrastructure or unhandled baseline error');
+          console.log('Exactly two intended nonnumeric-history assertion failures; all eleven controls and four existing tests passed.');
+          JS
+          restore
+          trap - EXIT
+          sha256sum -c "$VERIFY_DIR/application.sha256"
+          git diff --exit-code "$APP_SHA" -- .
+      - name: Required typecheck
+        run: pnpm typecheck 2>&1 | tee "$VERIFY_DIR/typecheck.log"
+      - name: Required full suite
+        run: pnpm test 2>&1 | tee "$VERIFY_DIR/test.log"
+      - name: Required build
+        run: pnpm build 2>&1 | tee "$VERIFY_DIR/build.log"
+      - name: Verify final immutable source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$APP_SHA"
+          sha256sum -c "$VERIFY_DIR/application.sha256"
+          git diff --exit-code "$APP_SHA" -- .
+          git diff --exit-code "$APP_SHA" "$CI_SHA" -- . ':(exclude).github/workflows/ci.yml'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: posthog-history-verification
+          path: ${{ runner.temp }}/posthog-history-verification
+          retention-days: 7
