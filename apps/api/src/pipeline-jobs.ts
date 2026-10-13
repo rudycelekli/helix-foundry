@@ -19,15 +19,24 @@ export async function runPipelineJob(
     version = randomUUID();
   const canceled = () => new Error("Pipeline canceled");
   const check = async () => {
-    if ((await store.get(scope, job.id))?.data.status === "canceled")
-      controller.abort(canceled());
+    try {
+      if ((await store.get(scope, job.id))?.data.status === "canceled")
+        controller.abort(canceled());
+    } catch {
+      // A transient status read must not cancel an otherwise healthy build.
+    }
   };
   await check();
   controller.signal.throwIfAborted();
-  const poll = setInterval(
-    () => void check().catch((error) => controller.abort(error)),
-    250,
-  );
+  let stopped = false;
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  const schedule = () => {
+    poll = setTimeout(async () => {
+      await check();
+      if (!stopped && !controller.signal.aborted) schedule();
+    }, 1000);
+  };
+  schedule();
   let committed = false;
   try {
     const result = await queryDatasets(
@@ -85,7 +94,8 @@ export async function runPipelineJob(
     });
     committed = true;
   } finally {
-    clearInterval(poll);
+    stopped = true;
+    clearTimeout(poll);
     if (!committed)
       await rm(
         resolve(config.dataDir, "datasets", scope, version + ".parquet"),
