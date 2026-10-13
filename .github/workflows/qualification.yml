@@ -17,7 +17,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 8a3185735ed7b7740484fbc0cf262c89a59dfda8
+          ref: 00d7927d7c08e16c58316e006959f052427e7fa1
           path: candidate
           fetch-depth: 0
           persist-credentials: false
@@ -35,9 +35,9 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          7c73eb509df88be5eeaf14a36900593296ef825c65eaac11a76b22cc92b64879  qualification-runner.mjs
+          e1f3fffad88ea1bcfbc3347b0a00e1d18ddddb795369f3c1b1226ee204641b42  qualification-runner.mjs
           fe5afbcfbfd2d35901dc606dd6aebc5a624b71dfb1d7fd94116e01af06d2e361  network-guard.mjs
-          1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
+          24b9dcfb98bedb76c23bb3f76913bf8a2a45cef142ffe2eb655f9bb9ac016cdc  source-guard.mjs
           118d8ce93ca2bbce640e724c88ce1dfee2aaf645c4ac22a2ae1b652881bf34d1  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           de673b6496055110423248b9b545f6f7943965416cdbdf1235d67f7e4f4a0f81  network-owned-native-smoke.mjs
@@ -58,9 +58,9 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          7c73eb509df88be5eeaf14a36900593296ef825c65eaac11a76b22cc92b64879  qualification-runner.mjs
+          e1f3fffad88ea1bcfbc3347b0a00e1d18ddddb795369f3c1b1226ee204641b42  qualification-runner.mjs
           fe5afbcfbfd2d35901dc606dd6aebc5a624b71dfb1d7fd94116e01af06d2e361  network-guard.mjs
-          1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
+          24b9dcfb98bedb76c23bb3f76913bf8a2a45cef142ffe2eb655f9bb9ac016cdc  source-guard.mjs
           118d8ce93ca2bbce640e724c88ce1dfee2aaf645c4ac22a2ae1b652881bf34d1  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           de673b6496055110423248b9b545f6f7943965416cdbdf1235d67f7e4f4a0f81  network-owned-native-smoke.mjs
@@ -69,7 +69,7 @@ jobs:
           node harness/source-guard.mjs verify
       - name: Actual confined transport admission before browser proof
         run: node harness/network-owned-native-smoke.mjs --playwright
-      - name: Missing browser gate and red-first placement only
+      - name: Exact upstream baseline focused classifier
         run: node harness/qualification-runner.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
