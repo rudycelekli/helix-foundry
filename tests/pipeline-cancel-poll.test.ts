@@ -26,7 +26,7 @@ async function fixture(scope: string) {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   });
-  return { store, job, ready, finish: () => finish({ version: "result", profile: { columns: [] } } as Awaited<ReturnType<typeof queryDatasets>>),
+  return { store, job, ready, finish: () => finish({ version: "result", citations: [], state: "dataset_snapshot", rows: [], profile: { rows: 0, columns: [], sample: [], fingerprint: "fixture" } }),
     fail: () => fail(new Error("test cleanup")), signal: () => signal };
 }
 
