@@ -16,6 +16,26 @@ function loopback(host) {
   return host === 'localhost' || host === '::1' || (net.isIP(host) === 4 && host.startsWith('127.'))
     || (net.isIP(host) === 6 && host.startsWith('::ffff:127.'));
 }
+function confinedLookup(lookup) {
+  if (typeof lookup !== 'function') throw new Error('qualification denies invalid DNS lookup');
+  return function (hostname, options, callback) {
+    if (!loopback(hostname)) throw new Error('qualification denies non-loopback lookup host');
+    if (typeof options === 'function') { callback = options; options = {}; }
+    let completed = false;
+    const done = (error, address, family) => {
+      if (completed) return; completed = true;
+      if (error) return callback(error);
+      const entries = Array.isArray(address) ? address : [{ address, family }];
+      const valid = entries.length > 0 && entries.every(entry => {
+        const ipFamily = net.isIP(entry?.address);
+        return ipFamily !== 0 && loopback(entry.address) && entry.family === ipFamily;
+      });
+      if (!valid) return callback(new Error('qualification denies non-loopback DNS result'));
+      return Array.isArray(address) ? callback(null, address) : callback(null, address, family);
+    };
+    try { return lookup.call(this, hostname, options, done); } catch (error) { if (completed) throw error; return done(error); }
+  };
+}
 const connect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function (...args) {
   const normalized = Array.isArray(args[0]) ? args[0] : args;
@@ -26,8 +46,13 @@ net.Socket.prototype.connect = function (...args) {
     const options = typeof first === 'object' && first !== null ? first : { host: typeof normalized[1] === 'string' ? normalized[1] : undefined };
     if (options.path !== undefined && options.port === undefined) {
       if (!ownedUnix(options.path)) throw new Error('qualification denies unowned Unix socket');
-    } else if (!loopback(options.host) || options.lookup !== undefined) {
-      throw new Error('qualification denies non-loopback or custom DNS network');
+    } else {
+      if (!loopback(options.host)) throw new Error('qualification denies non-loopback network');
+      if (options.lookup !== undefined) {
+        const guarded = { ...options, lookup: confinedLookup(options.lookup) };
+        if (Array.isArray(args[0])) args = [[guarded, ...normalized.slice(1)], ...args.slice(1)];
+        else args = [guarded, ...args.slice(1)];
+      }
     }
   }
   return connect.apply(this, args);

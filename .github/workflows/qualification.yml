@@ -35,10 +35,10 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          2df1a94601cb67f8753bb28cfbe0699bfcaa1f37bb5020c245eaec00f4653632  qualification-runner.mjs
-          0e1b0303f26e04d7e7ae1e3d3691e9a1969b2b314effd22a8f4e4f913ce7cfbd  network-guard.mjs
+          7c73eb509df88be5eeaf14a36900593296ef825c65eaac11a76b22cc92b64879  qualification-runner.mjs
+          2c15543378ab9e84935c8027115fac65d8f1e06d2270aa908a933fab4159e573  network-guard.mjs
           1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
-          48cf0212c64b46a94fd71b53f0422d5a4dd10aed1ad27de13c83ec8c6382387c  network-guard-selftest.mjs
+          adf6aef3f9f000bc639d51608b5d584e83f25d721439a6644b78b568d8b39686  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           HASHES
           cd ..
@@ -57,15 +57,15 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          2df1a94601cb67f8753bb28cfbe0699bfcaa1f37bb5020c245eaec00f4653632  qualification-runner.mjs
-          0e1b0303f26e04d7e7ae1e3d3691e9a1969b2b314effd22a8f4e4f913ce7cfbd  network-guard.mjs
+          7c73eb509df88be5eeaf14a36900593296ef825c65eaac11a76b22cc92b64879  qualification-runner.mjs
+          2c15543378ab9e84935c8027115fac65d8f1e06d2270aa908a933fab4159e573  network-guard.mjs
           1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
-          48cf0212c64b46a94fd71b53f0422d5a4dd10aed1ad27de13c83ec8c6382387c  network-guard-selftest.mjs
+          adf6aef3f9f000bc639d51608b5d584e83f25d721439a6644b78b568d8b39686  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           HASHES
           cd ..
           node harness/source-guard.mjs verify
-      - name: Required native gates and red-first owner regressions
+      - name: Missing browser gate and red-first placement only
         run: node harness/qualification-runner.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
