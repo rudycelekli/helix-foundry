@@ -4,8 +4,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from
 import { resolve } from 'node:path';
 const root = resolve('candidate'), proof = resolve('proof');
 mkdirSync(proof, { recursive: true });
-const expected = 'e9a84af735b9d710d97bbbe00fb0058b70ffe71a';
-const tree = '9652118e953e620d429a86421c7cba8db525e75c';
+const expected = '8a3185735ed7b7740484fbc0cf262c89a59dfda8';
+const tree = '91c28aca2dfcb501722e40510c223e47e254554a';
 const base = '00d7927d7c08e16c58316e006959f052427e7fa1';
 const before = 'a14bb717273667ac2edae4df5f22af8beedf98ae';
 const gitRaw = (...args) => {
@@ -15,7 +15,7 @@ const gitRaw = (...args) => {
 };
 const git = (...args) => gitRaw(...args).trim();
 if (git('rev-parse', 'HEAD') !== expected || git('rev-parse', 'HEAD^{tree}') !== tree) throw new Error('wrong candidate');
-if (!git('show', '-s', '--format=%P', 'HEAD').split(' ').includes(base)) throw new Error('wrong integrated base');
+if (git('merge-base', base, expected) !== base) throw new Error('wrong integrated base');
 if (existsSync(resolve(root, '.env'))) throw new Error('qualification cannot use .env');
 for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'TEST_HELIX', 'TEST_MYSQL', 'TEST_CDC_DATABASES', 'TEST_ONBOARDING_DATABASES', 'ONBOARDING_LOCAL']) {
   if (process.env[key]) throw new Error('unexpected credential or live opt-in environment: ' + key);

@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, lstatSync, readlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 const root = resolve('candidate'), proof = resolve('proof');
-const expected = 'e9a84af735b9d710d97bbbe00fb0058b70ffe71a';
-const tree = '9652118e953e620d429a86421c7cba8db525e75c';
+const expected = '8a3185735ed7b7740484fbc0cf262c89a59dfda8';
+const tree = '91c28aca2dfcb501722e40510c223e47e254554a';
 function git(...args) { const r = spawnSync('git', args, { cwd: root }); if (r.status) throw new Error('source Git guard failed'); return r.stdout; }
 const hash = raw => createHash('sha256').update(raw).digest('hex');
 if (git('rev-parse', 'HEAD').toString().trim() !== expected || git('rev-parse', 'HEAD^{tree}').toString().trim() !== tree) throw new Error('wrong candidate');

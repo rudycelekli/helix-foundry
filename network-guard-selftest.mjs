@@ -29,7 +29,9 @@ try {
   mkdirSync(resolve(root, 'nested'));
   net.connect(resolve(root, 'nested/owned.sock')).destroy();
   net.createConnection({ path: resolve(root, 'owned.sock') }).destroy();
-  assert.equal(calls.length, 7);
+  net.connect({ host: 'localhost', port: 1, path: '/http/url' }).destroy();
+  assert.throws(() => net.connect({ host: 'example.com', port: 443, path: resolve(root, 'owned.sock') }), /denies/);
+  assert.equal(calls.length, 8);
   const code = `const assert=require('node:assert/strict');const net=require('node:net');assert.equal(globalThis[Symbol.for('helix.qualification.network-guard')],true);assert.throws(()=>net.connect({host:'example.com',port:443}),/denies/);assert.equal(globalThis[Symbol.for('helix.qualification.transport-calls')].length,0);console.log('Child guard propagation PASS; no connection');`;
   const child = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env: { ...process.env,
     NODE_OPTIONS: '--import ' + resolve(dir, 'selftest-transport-stub.mjs') + ' --import ' + resolve(dir, 'network-guard.mjs') } });

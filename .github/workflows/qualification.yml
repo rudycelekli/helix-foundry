@@ -17,7 +17,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: e9a84af735b9d710d97bbbe00fb0058b70ffe71a
+          ref: 8a3185735ed7b7740484fbc0cf262c89a59dfda8
           path: candidate
           fetch-depth: 0
           persist-credentials: false
@@ -35,10 +35,10 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          c90e8b240254d0d7ca760af6f4a967aa9c676cc6cba7f5d1367d6823d6ad5eb8  qualification-runner.mjs
-          cb1c1fd381273c7d537c4e03e01a4942f4ab9f09b77debf91e7e7b79aa221f5d  network-guard.mjs
-          31c003943fc888ca9299881b4c19d08b321af19d164a2a0cdd6071a6386610a8  source-guard.mjs
-          04ce029e8e6bbf004b535484b5d607365750524ec5c7bedf82552df86ba96476  network-guard-selftest.mjs
+          2df1a94601cb67f8753bb28cfbe0699bfcaa1f37bb5020c245eaec00f4653632  qualification-runner.mjs
+          0e1b0303f26e04d7e7ae1e3d3691e9a1969b2b314effd22a8f4e4f913ce7cfbd  network-guard.mjs
+          1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
+          48cf0212c64b46a94fd71b53f0422d5a4dd10aed1ad27de13c83ec8c6382387c  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           HASHES
           cd ..
@@ -57,10 +57,10 @@ jobs:
           test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
           cd harness
           sha256sum --check <<'HASHES'
-          c90e8b240254d0d7ca760af6f4a967aa9c676cc6cba7f5d1367d6823d6ad5eb8  qualification-runner.mjs
-          cb1c1fd381273c7d537c4e03e01a4942f4ab9f09b77debf91e7e7b79aa221f5d  network-guard.mjs
-          31c003943fc888ca9299881b4c19d08b321af19d164a2a0cdd6071a6386610a8  source-guard.mjs
-          04ce029e8e6bbf004b535484b5d607365750524ec5c7bedf82552df86ba96476  network-guard-selftest.mjs
+          2df1a94601cb67f8753bb28cfbe0699bfcaa1f37bb5020c245eaec00f4653632  qualification-runner.mjs
+          0e1b0303f26e04d7e7ae1e3d3691e9a1969b2b314effd22a8f4e4f913ce7cfbd  network-guard.mjs
+          1cc3aa7132231e45d284fb815358445b692cf97aacdcb2ddc868c5e4c5184eb5  source-guard.mjs
+          48cf0212c64b46a94fd71b53f0422d5a4dd10aed1ad27de13c83ec8c6382387c  network-guard-selftest.mjs
           df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
           HASHES
           cd ..

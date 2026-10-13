@@ -24,7 +24,7 @@ net.Socket.prototype.connect = function (...args) {
     if (!ownedUnix(first)) throw new Error('qualification denies unowned Unix socket');
   } else {
     const options = typeof first === 'object' && first !== null ? first : { host: typeof normalized[1] === 'string' ? normalized[1] : undefined };
-    if (options.path !== undefined) {
+    if (options.path !== undefined && options.port === undefined) {
       if (!ownedUnix(options.path)) throw new Error('qualification denies unowned Unix socket');
     } else if (!loopback(options.host) || options.lookup !== undefined) {
       throw new Error('qualification denies non-loopback or custom DNS network');
