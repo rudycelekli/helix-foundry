@@ -29,7 +29,9 @@ try {
   mkdirSync(resolve(root, 'nested'));
   net.connect(resolve(root, 'nested/owned.sock')).destroy();
   net.createConnection({ path: resolve(root, 'owned.sock') }).destroy();
-  net.connect({ host: 'localhost', port: 1, path: '/http/url' }).destroy();
+  net.connect({ host: 'localhost', port: 1, path: null }).destroy();
+  assert.throws(() => net.connect({ host: 'localhost', port: 1, path: resolve(outside, 'socket') }), /denies/);
+  assert.throws(() => net.connect({ host: 'localhost', port: 1, path: '/http/url' }), /denies/);
   assert.throws(() => net.connect({ host: 'example.com', port: 443, path: resolve(root, 'owned.sock') }), /denies/);
   assert.equal(calls.length, 8);
   const checkLookup = (lookup, expected, options = {}) => {

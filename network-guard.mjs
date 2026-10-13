@@ -44,13 +44,14 @@ net.Socket.prototype.connect = function (...args) {
     if (!ownedUnix(first)) throw new Error('qualification denies unowned Unix socket');
   } else {
     const options = typeof first === 'object' && first !== null ? first : { host: typeof normalized[1] === 'string' ? normalized[1] : undefined };
-    if (options.path !== undefined && options.port === undefined) {
+    if (options.path) {
       if (!ownedUnix(options.path)) throw new Error('qualification denies unowned Unix socket');
+      if (options.port !== undefined && !loopback(options.host)) throw new Error('qualification denies non-loopback mixed socket options');
     } else {
       if (!loopback(options.host)) throw new Error('qualification denies non-loopback network');
       if (options.lookup !== undefined) {
         const guarded = { ...options, lookup: confinedLookup(options.lookup) };
-        if (Array.isArray(args[0])) args = [[guarded, ...normalized.slice(1)], ...args.slice(1)];
+        if (Array.isArray(args[0])) args = [guarded, ...normalized.slice(1)];
         else args = [guarded, ...args.slice(1)];
       }
     }
