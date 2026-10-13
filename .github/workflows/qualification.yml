@@ -1,0 +1,76 @@
+name: Existing Helix105 owner feedback native qualification
+on:
+  push:
+    branches: [validation/helix105-owner-feedback]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'rudycelekli/helix-foundry' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e9a84af735b9d710d97bbbe00fb0058b70ffe71a
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.7.0
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Freeze Gitblob evidence before dependency installation
+        env:
+          EXPECTED_HARNESS_HEAD: ${{ github.sha }}
+        run: |
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
+          cd harness
+          sha256sum --check <<'HASHES'
+          c90e8b240254d0d7ca760af6f4a967aa9c676cc6cba7f5d1367d6823d6ad5eb8  qualification-runner.mjs
+          cb1c1fd381273c7d537c4e03e01a4942f4ab9f09b77debf91e7e7b79aa221f5d  network-guard.mjs
+          31c003943fc888ca9299881b4c19d08b321af19d164a2a0cdd6071a6386610a8  source-guard.mjs
+          04ce029e8e6bbf004b535484b5d607365750524ec5c7bedf82552df86ba96476  network-guard-selftest.mjs
+          df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
+          HASHES
+          cd ..
+          node harness/network-guard-selftest.mjs
+          node harness/source-guard.mjs create
+      - name: Install exact repository dependency lock
+        working-directory: candidate
+        run: pnpm install --frozen-lockfile
+      - name: Install GitHub-owned browser only
+        working-directory: candidate
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Reverify frozen source and harness before execution
+        env:
+          EXPECTED_HARNESS_HEAD: ${{ github.sha }}
+        run: |
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HARNESS_HEAD"
+          cd harness
+          sha256sum --check <<'HASHES'
+          c90e8b240254d0d7ca760af6f4a967aa9c676cc6cba7f5d1367d6823d6ad5eb8  qualification-runner.mjs
+          cb1c1fd381273c7d537c4e03e01a4942f4ab9f09b77debf91e7e7b79aa221f5d  network-guard.mjs
+          31c003943fc888ca9299881b4c19d08b321af19d164a2a0cdd6071a6386610a8  source-guard.mjs
+          04ce029e8e6bbf004b535484b5d607365750524ec5c7bedf82552df86ba96476  network-guard-selftest.mjs
+          df4dddce17ae4cc2f287ed594a0e0b75c6d08d310f9d90f440c551b29360a533  selftest-transport-stub.mjs
+          HASHES
+          cd ..
+          node harness/source-guard.mjs verify
+      - name: Required native gates and red-first owner regressions
+        run: node harness/qualification-runner.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: helix105-owner-feedback-native-proof
+          path: proof
+          retention-days: 1
+          compression-level: 9
