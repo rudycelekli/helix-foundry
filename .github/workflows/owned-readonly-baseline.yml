@@ -1,0 +1,156 @@
+name: Owned Helix read-only Postgres baseline
+'on':
+  push:
+    branches:
+    - validation/helix-readonly-baseline-syntax-20261021
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: fixture-only
+          POSTGRES_DB: proof
+        ports:
+        - 5432:5432
+        options: --health-cmd "pg_isready -U postgres -d proof" --health-interval
+          5s --health-timeout 5s --health-retries 12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: HelixDB/helix-foundry
+        ref: 00d7927d7c08e16c58316e006959f052427e7fa1
+        persist-credentials: false
+        fetch-depth: 1
+    - name: Record exact source and runtime
+      run: 'test "$(git rev-parse HEAD)" = "00d7927d7c08e16c58316e006959f052427e7fa1"
+
+        git status --porcelain
+
+        sha256sum pnpm-lock.yaml
+
+        cat /etc/os-release
+
+        echo "$ImageOS $ImageVersion"
+
+        docker inspect "${{ job.services.postgres.id }}" --format ''{{.Image}}'''
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.7.0
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: pnpm
+    - run: 'node --version
+
+        pnpm --version
+
+        pnpm install --frozen-lockfile
+
+        pnpm build:sdk'
+    - name: Write test-only native oracle
+      run: "cat > tests/owned-postgres-readonly-proof.test.ts <<'PROOF_EOF'\nimport\
+        \ { beforeAll, afterAll, describe, it, expect } from \"vitest\";\nimport pg\
+        \ from \"pg\";\nimport { discover } from \"../apps/api/src/connectors.js\"\
+        ;\nimport { createApp } from \"../apps/api/src/app.js\";\nimport { MemoryStore\
+        \ } from \"../apps/api/src/store.js\";\nconst connection = { host: \"127.0.0.1\"\
+        , port: 5432, database: \"proof\", user: \"postgres\", password: \"fixture-only\"\
+        , tls: false };\nconst reader = { ...connection, user: \"foundry_readonly\"\
+        , password: \"fixture-reader\" };\nconst schema = \"proof_owned\";\nconst\
+        \ admin = new pg.Pool(connection);\nconst keys = [\n  { table_schema: schema,\
+        \ table_name: \"customers\", column_name: \"customer_id\", constraint_type:\
+        \ \"PRIMARY KEY\" },\n  { table_schema: schema, table_name: \"orders\", column_name:\
+        \ \"order_id\", constraint_type: \"PRIMARY KEY\" },\n  { table_schema: schema,\
+        \ table_name: \"orders\", column_name: \"customer_id\", constraint_type: \"\
+        FOREIGN KEY\" },\n];\nconst foreignKeys = [{ table_schema: schema, table_name:\
+        \ \"orders\", column_name: \"customer_id\", referenced_schema: schema, referenced_table:\
+        \ \"customers\", referenced_column: \"customer_id\" }];\nbeforeAll(async ()\
+        \ => {\n  console.log(\"Owned PostgreSQL runtime\", (await admin.query(\"\
+        SELECT version() AS version\")).rows[0].version);\n  await admin.query(`CREATE\
+        \ SCHEMA proof_owned;\n    CREATE TABLE proof_owned.customers(customer_id\
+        \ text PRIMARY KEY);\n    CREATE TABLE proof_owned.orders(order_id text PRIMARY\
+        \ KEY, customer_id text REFERENCES proof_owned.customers);\n    CREATE TABLE\
+        \ proof_owned.hidden(secret_id text PRIMARY KEY);\n    CREATE ROLE foundry_readonly\
+        \ LOGIN PASSWORD 'fixture-reader';\n    GRANT CONNECT ON DATABASE proof TO\
+        \ foundry_readonly;\n    GRANT USAGE ON SCHEMA proof_owned TO foundry_readonly;\n\
+        \    GRANT SELECT ON proof_owned.customers, proof_owned.orders TO foundry_readonly;`);\n\
+        });\nafterAll(async () => { await admin.end(); });\ndescribe(\"owned Postgres\
+        \ read-only discovery\", () => {\n  it(\"owner control exposes explicit DDL\
+        \ keys and FK\", async () => {\n    const d = await discover(\"postgres\"\
+        , connection);\n    expect(d.keys.filter((r: any) => r.table_schema === schema\
+        \ && r.table_name !== \"hidden\")).toEqual(expect.arrayContaining(keys));\n\
+        \    expect(d.foreignKeys.filter((r: any) => r.table_schema === schema)).toEqual(foreignKeys);\n\
+        \  });\n  it(\"reader visibility control lists only selectable tables\", async\
+        \ () => {\n    const d = await discover(\"postgres\", reader);\n    expect(d.tables.filter((r:\
+        \ any) => r.schema === schema).map((r: any) => r.name).sort()).toEqual([\"\
+        customers\", \"orders\"]);\n    expect(d.keys.some((r: any) => r.table_schema\
+        \ === schema && r.table_name === \"hidden\")).toBe(false);\n  });\n  it(\"\
+        reader exposes the same declared keys and FK as explicit DDL\", async () =>\
+        \ {\n    const d = await discover(\"postgres\", reader);\n    expect(d.keys.filter((r:\
+        \ any) => r.table_schema === schema)).toEqual(expect.arrayContaining(keys));\n\
+        \    expect(d.foreignKeys.filter((r: any) => r.table_schema === schema)).toEqual(foreignKeys);\n\
+        \  });\n  it(\"actual source API persists the selected reader table key evidence\"\
+        , async () => {\n    const store = new MemoryStore();\n    const app = await\
+        \ createApp(store);\n    try {\n      await app.ready();\n      const me =\
+        \ await app.inject({ method: \"GET\", url: \"/api/v1/me\" });\n      expect(me.statusCode).toBe(200);\n\
+        \      const scope = me.json().workspaces[0].id;\n      const response = await\
+        \ app.inject({ method: \"POST\", url: `/api/v1/workspaces/${scope}/sources`,\
+        \ payload: { name: \"Owned readonly orders\", kind: \"postgres\", config:\
+        \ { ...reader, schema, table: \"orders\" } } });\n      expect(response.statusCode).toBe(200);\n\
+        \      const id = response.json().id;\n      const stored = await store.get(scope,\
+        \ id);\n      expect(stored?.data.discovery.foreignKeys).toEqual(foreignKeys);\n\
+        \      expect(stored?.data.discovery.keys).toHaveLength(2);\n      expect(stored?.data.discovery.keys).toEqual(expect.arrayContaining(keys.filter(r\
+        \ => r.table_name === \"orders\")));\n    } finally { await app.close(); }\n\
+        \  });\n});\nPROOF_EOF\n"
+    - name: Run baseline without altering assertions
+      id: baseline
+      continue-on-error: true
+      run: pnpm exec vitest run tests/owned-postgres-readonly-proof.test.ts --reporter=default
+        --reporter=junit --outputFile.junit=baseline-junit.xml 2>&1 | tee baseline.log
+      env:
+        NODE_ENV: test
+        INLINE_WORKER: 'false'
+        ENCRYPTION_KEY: owned-proof-encryption-key-32-characters
+        INTERNAL_KEY: owned-proof-internal-key-32-characters
+        DATA_DIR: /tmp/helix-readonly-owned
+    - name: Verify exact expected failures and source guard
+      if: always()
+      run: 'python3 - <<''VERIFY''
+
+        import subprocess,xml.etree.ElementTree as E
+
+        r=E.parse(''baseline-junit.xml'').getroot();cases=list(r.iter(''testcase''));failed=[x
+        for x in cases if x.find(''failure'') is not None]
+
+        assert len(cases)==4,(len(cases),[x.attrib for x in cases])
+
+        assert len(failed)==2,[x.attrib for x in failed]
+
+        expected={''reader exposes the same declared keys and FK as explicit DDL'',''actual
+        source API persists the selected reader table key evidence''}
+
+        assert all(any(x.attrib[''name''].endswith(n) for x in failed) for n in expected)
+
+        assert not list(r.iter(''error'')) and not list(r.iter(''skipped''))
+
+        assert subprocess.check_output([''git'',''diff'',''--name-only'']).decode().strip()==''''
+
+        assert subprocess.check_output([''git'',''ls-files'',''--others'',''--exclude-standard'']).decode().splitlines()==[''baseline-junit.xml'',''baseline.log'',''tests/owned-postgres-readonly-proof.test.ts'']
+
+        print(''Expected two native metadata failures; two controls passed; tracked
+        source unchanged.'')
+
+        VERIFY'
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: helix-readonly-native-baseline
+        path: 'baseline.log
+
+          baseline-junit.xml
+
+          tests/owned-postgres-readonly-proof.test.ts'
