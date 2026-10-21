@@ -1,0 +1,486 @@
+name: Owned Helix Postgres candidate qualification
+'on':
+  push:
+    branches:
+    - validation/helix-readonly-candidate-20261021
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: fixture-only
+          POSTGRES_DB: proof
+        ports:
+        - 5432:5432
+        options: --health-cmd "pg_isready -U postgres -d proof" --health-interval
+          5s --health-timeout 5s --health-retries 12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: HelixDB/helix-foundry
+        ref: 00d7927d7c08e16c58316e006959f052427e7fa1
+        persist-credentials: false
+        fetch-depth: 1
+    - name: Record exact source and runtime
+      run: 'test "$(git rev-parse HEAD)" = "00d7927d7c08e16c58316e006959f052427e7fa1"
+
+        git status --porcelain
+
+        sha256sum pnpm-lock.yaml
+
+        cat /etc/os-release
+
+        echo "$ImageOS $ImageVersion"
+
+        docker inspect "${{ job.services.postgres.id }}" --format ''{{.Image}}''
+
+        python3 - <<''MANIFEST''
+
+        import subprocess,hashlib,json,os,pathlib
+
+        files=subprocess.check_output(["git","ls-files","-z"]).decode().split("\0")
+
+        m={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in files
+        if f and pathlib.Path(f).is_file()}
+
+        pathlib.Path(os.environ["RUNNER_TEMP"],"helix-tracked-before.json").write_text(json.dumps(m,sort_keys=True))
+
+        MANIFEST'
+      shell: bash
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.7.0
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: pnpm
+    - run: 'node --version
+
+        pnpm --version
+
+        pnpm install --frozen-lockfile
+
+        pnpm build:sdk'
+      shell: bash
+    - name: Apply reviewed apps/api/src/connectors.ts
+      run: "cat > apps/api/src/connectors.ts <<'REVIEWED_EOF'\nimport mysql from \"\
+        mysql2\";\nimport pg from \"pg\";\nimport {\n  S3Client,\n  ListObjectsV2Command,\n\
+        \  GetObjectCommand,\n} from \"@aws-sdk/client-s3\";\nimport { createWriteStream\
+        \ } from \"node:fs\";\nimport { mkdir, rm } from \"node:fs/promises\";\nimport\
+        \ { pipeline, finished } from \"node:stream/promises\";\nimport { once } from\
+        \ \"node:events\";\nimport { resolve } from \"node:path\";\nimport { randomUUID\
+        \ } from \"node:crypto\";\nimport { config } from \"./config.js\";\nimport\
+        \ { assert } from \"./security.js\";\nimport { postgresPoolConfig } from \"\
+        ./postgres-config.js\";\nimport { discoverStripe, importStripe } from \"./stripe.js\"\
+        ;\nimport { discoverWorkos, importWorkos } from \"./workos.js\";\nimport {\
+        \ discoverPosthog, importPosthog } from \"./posthog.js\";\nimport { discoverNeo4j,\
+        \ importNeo4j } from \"./neo4j.js\";\nexport type ConnectorConfig = Record<string,\
+        \ any>;\nfunction mysqlPool(c: ConnectorConfig) {\n  return mysql.createPool({\n\
+        \    host: c.host,\n    port: Number(c.port || 3306),\n    user: c.user,\n\
+        \    password: c.password,\n    database: c.database,\n    connectionLimit:\
+        \ 2,\n    connectTimeout: 10000,\n    supportBigNumbers: true,\n    bigNumberStrings:\
+        \ true,\n    decimalNumbers: false,\n    dateStrings: true,\n    ssl: c.tls\n\
+        \      ? { rejectUnauthorized: true, ...(c.ca ? { ca: c.ca } : {}) }\n   \
+        \   : undefined,\n  });\n}\nfunction pgPool(c: ConnectorConfig) {\n  return\
+        \ new pg.Pool(postgresPoolConfig(c));\n}\nconst identifier = (s: string, kind:\
+        \ string) =>\n  kind === \"mysql\"\n    ? \"`\" + s.replaceAll(\"`\", \"``\"\
+        ) + \"`\"\n    : '\"' + s.replaceAll('\"', '\"\"') + '\"';\nconst s3 = (c:\
+        \ ConnectorConfig) =>\n  new S3Client({\n    region: c.region || \"us-east-1\"\
+        ,\n    endpoint: c.endpoint || undefined,\n    forcePathStyle: !!c.endpoint,\n\
+        \    credentials: c.accessKeyId\n      ? { accessKeyId: c.accessKeyId, secretAccessKey:\
+        \ c.secretAccessKey }\n      : undefined,\n  });\nexport function checkedURL(value:\
+        \ string) {\n  const u = new URL(value);\n  assert([\"http:\", \"https:\"\
+        ].includes(u.protocol), \"Use an HTTP(S) URL\");\n  assert(\n    !u.username\
+        \ && !u.password,\n    \"Use credential fields instead of URL credentials\"\
+        ,\n  );\n  assert(\n    ![\n      \"169.254.169.254\",\n      \"metadata.google.internal\"\
+        ,\n      \"100.100.100.200\",\n    ].includes(u.hostname),\n    \"Metadata\
+        \ endpoints are not data sources\",\n  );\n  return u;\n}\nfunction headers(c:\
+        \ ConnectorConfig) {\n  return c.token\n    ? {\n        [c.header || \"Authorization\"\
+        ]: c.header\n          ? String(c.token)\n          : \"Bearer \" + c.token,\n\
+        \      }\n    : {};\n}\nexport async function discover(kind: string, c: ConnectorConfig)\
+        \ {\n  if (kind === \"mysql\") {\n    const pool = mysqlPool(c);\n    try\
+        \ {\n      const [tables] = await pool\n        .promise()\n        .query(\n\
+        \          \"SELECT TABLE_NAME name, TABLE_ROWS estimatedRows FROM information_schema.TABLES\
+        \ WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = ?\",\n          [c.database, \"\
+        BASE TABLE\"],\n        );\n      const [keys] = await pool\n        .promise()\n\
+        \        .query(\n          \"SELECT TABLE_NAME tableName, COLUMN_NAME columnName,\
+        \ CONSTRAINT_NAME constraintName, REFERENCED_TABLE_NAME referencedTable, REFERENCED_COLUMN_NAME\
+        \ referencedColumn FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA\
+        \ = ?\",\n          [c.database],\n        );\n      const [databases] = await\
+        \ pool\n        .promise()\n        .query(\"SELECT SCHEMA_NAME name FROM\
+        \ information_schema.SCHEMATA\");\n      const [columns] = await pool\n  \
+        \      .promise()\n        .query(\n          \"SELECT TABLE_NAME tableName,\
+        \ COLUMN_NAME name, COLUMN_TYPE type, IS_NULLABLE nullable, COLUMN_DEFAULT\
+        \ defaultValue FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER\
+        \ BY TABLE_NAME, ORDINAL_POSITION\",\n          [c.database],\n        );\n\
+        \      const [sample] = c.table\n        ? await pool\n            .promise()\n\
+        \            .query(\"SELECT * FROM \" + identifier(c.table, kind) + \" LIMIT\
+        \ 10\")\n        : [[]];\n      return { tables, keys, databases, columns,\
+        \ sample };\n    } finally {\n      await pool.promise().end();\n    }\n \
+        \ }\n  if (kind === \"postgres\") {\n    const pool = pgPool(c);\n    try\
+        \ {\n      const tables = await pool.query(\n        \"SELECT table_schema\
+        \ schema, table_name name FROM information_schema.tables WHERE table_schema\
+        \ NOT IN ('pg_catalog','information_schema') AND table_type='BASE TABLE'\"\
+        ,\n      );\n      // The schema lets each source keep only its own table's\
+        \ keys.\n      const keys = await pool.query(\n        `SELECT n.nspname AS\
+        \ table_schema, t.relname AS table_name,\n                a.attname AS column_name,\n\
+        \                CASE k.contype WHEN 'p' THEN 'PRIMARY KEY' ELSE 'FOREIGN\
+        \ KEY' END AS constraint_type\n         FROM pg_catalog.pg_constraint k\n\
+        \         JOIN pg_catalog.pg_class t ON t.oid = k.conrelid\n         JOIN\
+        \ pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n         CROSS JOIN\
+        \ LATERAL unnest(k.conkey) WITH ORDINALITY AS col(attnum, position)\n    \
+        \     JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum =\
+        \ col.attnum\n         WHERE k.contype IN ('p', 'f') AND t.relkind IN ('r',\
+        \ 'p')\n           AND n.nspname NOT IN ('pg_catalog', 'information_schema')\n\
+        \           AND has_table_privilege(t.oid, 'SELECT')\n         ORDER BY n.nspname,\
+        \ t.relname, k.oid, col.position`,\n      );\n      const columns = await\
+        \ pool.query(\n        \"SELECT table_schema AS schema,table_name AS table_name,column_name\
+        \ AS name,data_type AS type,is_nullable AS nullable FROM information_schema.columns\
+        \ WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY table_schema,table_name,ordinal_position\"\
+        ,\n      );\n      const foreignKeys = await pool.query(\n        `SELECT\
+        \ n.nspname AS table_schema, t.relname AS table_name,\n                a.attname\
+        \ AS column_name, rn.nspname AS referenced_schema,\n                rt.relname\
+        \ AS referenced_table, ra.attname AS referenced_column\n         FROM pg_catalog.pg_constraint\
+        \ k\n         JOIN pg_catalog.pg_class t ON t.oid = k.conrelid\n         JOIN\
+        \ pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n         JOIN pg_catalog.pg_class\
+        \ rt ON rt.oid = k.confrelid\n         JOIN pg_catalog.pg_namespace rn ON\
+        \ rn.oid = rt.relnamespace\n         CROSS JOIN LATERAL unnest(k.conkey, k.confkey)\
+        \ WITH ORDINALITY AS col(attnum, refattnum, position)\n         JOIN pg_catalog.pg_attribute\
+        \ a ON a.attrelid = t.oid AND a.attnum = col.attnum\n         JOIN pg_catalog.pg_attribute\
+        \ ra ON ra.attrelid = rt.oid AND ra.attnum = col.refattnum\n         WHERE\
+        \ k.contype = 'f' AND t.relkind IN ('r', 'p')\n           AND n.nspname NOT\
+        \ IN ('pg_catalog', 'information_schema')\n           AND rn.nspname NOT IN\
+        \ ('pg_catalog', 'information_schema')\n           AND has_table_privilege(t.oid,\
+        \ 'SELECT')\n           AND has_table_privilege(rt.oid, 'SELECT')\n      \
+        \   ORDER BY n.nspname, t.relname, k.oid, col.position`,\n      );\n     \
+        \ const sample = c.table\n        ? (\n            await pool.query(\n   \
+        \           \"SELECT * FROM \" +\n                identifier(c.schema || \"\
+        public\", kind) +\n                \".\" +\n                identifier(c.table,\
+        \ kind) +\n                \" LIMIT 10\",\n            )\n          ).rows\n\
+        \        : [];\n      return {\n        tables: tables.rows,\n        keys:\
+        \ keys.rows,\n        columns: columns.rows,\n        foreignKeys: foreignKeys.rows,\n\
+        \        sample,\n      };\n    } finally {\n      await pool.end();\n   \
+        \ }\n  }\n  if (kind === \"s3\") {\n    const client = s3(c);\n    try {\n\
+        \      const tables: { name: string; size?: number }[] = [];\n      let cursor:\
+        \ string | undefined;\n      const seen = new Set<string>();\n      do {\n\
+        \        const r = await client.send(\n          new ListObjectsV2Command({\n\
+        \            Bucket: c.bucket,\n            Prefix: c.prefix || \"\",\n  \
+        \          MaxKeys: 1000,\n            ContinuationToken: cursor,\n      \
+        \    }),\n        );\n        for (const item of r.Contents || [])\n     \
+        \     if (item.Key && /\\.(csv|json|jsonl|parquet)$/i.test(item.Key))\n  \
+        \          tables.push({ name: item.Key, size: item.Size });\n        cursor\
+        \ = r.IsTruncated ? r.NextContinuationToken : undefined;\n        assert(\n\
+        \          !r.IsTruncated || cursor,\n          \"Bucket listing was incomplete.\
+        \ Try a narrower prefix.\",\n        );\n        if (cursor) {\n         \
+        \ assert(\n            !seen.has(cursor),\n            \"Bucket listing repeated\
+        \ a continuation token. Try a narrower prefix.\",\n          );\n        \
+        \  seen.add(cursor);\n        }\n        assert(\n          tables.length\
+        \ <= 10000,\n          \"More than 10,000 files found. Use a narrower prefix\
+        \ to select files.\",\n        );\n      } while (cursor);\n      return {\
+        \ tables };\n    } finally {\n      client.destroy();\n    }\n  }\n  if (kind\
+        \ === \"stripe\") return discoverStripe(c);\n  if (kind === \"workos\") return\
+        \ discoverWorkos(c);\n  if (kind === \"posthog\") return discoverPosthog(c);\n\
+        \  if (kind === \"neo4j\") return discoverNeo4j(c);\n  if (kind === \"rest\"\
+        ) {\n    const r = await fetch(checkedURL(c.url), {\n      headers: headers(c),\n\
+        \      redirect: \"error\",\n      signal: AbortSignal.timeout(15000),\n \
+        \   });\n    assert(r.ok, `Source returned HTTP ${r.status}`);\n    const\
+        \ data = await r.json();\n    const rows = c.itemsPath ? atPath(data, c.itemsPath)\
+        \ : data;\n    assert(Array.isArray(rows), \"REST items must be an array;\
+        \ set itemsPath\");\n    return {\n      tables: [{ name: \"API response\"\
+        , estimatedRows: rows.length }],\n      sample: rows.slice(0, 10),\n    };\n\
+        \  }\n  return { tables: [] };\n}\nfunction atPath(value: any, path: string)\
+        \ {\n  return path.split(\".\").reduce((v, k) => v?.[k], value);\n}\nexport\
+        \ async function importSource(\n  scope: string,\n  kind: string,\n  c: ConnectorConfig,\n\
+        \  progress?: (progress: {\n    message: string;\n    records?: number;\n\
+        \    bytes?: number;\n  }) => Promise<unknown>,\n): Promise<{\n  file: string;\n\
+        \  records: number;\n  schema?: { name: string; type: string }[];\n}> {\n\
+        \  await mkdir(resolve(config.dataDir, \"incoming\", scope), { recursive:\
+        \ true });\n  const ext =\n    kind === \"s3\"\n      ? String(c.key).split(\"\
+        .\").at(-1)?.toLowerCase() || \"json\"\n      : \"jsonl\";\n  assert(\n  \
+        \  [\"csv\", \"json\", \"jsonl\", \"parquet\"].includes(ext),\n    \"Choose\
+        \ CSV, JSON, JSONL or Parquet\",\n  );\n  await progress?.({ message: \"Reading\
+        \ complete snapshot\", records: 0 });\n  const file = randomUUID() + \".\"\
+        \ + ext,\n    path = resolve(config.dataDir, \"incoming\", scope, file),\n\
+        \    out = createWriteStream(path);\n  let count = 0;\n  let schema: { name:\
+        \ string; type: string }[] | undefined;\n  let lastProgress = 0;\n  const\
+        \ write = async (row: any) => {\n    if (Date.now() - lastProgress > 1000)\
+        \ {\n      lastProgress = Date.now();\n      await progress?.({\n        message:\
+        \ \"Reading complete snapshot\",\n        records: count,\n      });\n   \
+        \ }\n    if (++count > 2_000_000)\n      throw new Error(\"Import limit is\
+        \ two million records per snapshot\");\n    if (\n      !out.write(\n    \
+        \    JSON.stringify(row, (_, v) =>\n          typeof v === \"bigint\" ? v.toString()\
+        \ : v,\n        ) + \"\\n\",\n      )\n    )\n      await once(out, \"drain\"\
+        );\n  };\n  try {\n    if (kind === \"mysql\") {\n      assert(c.table, \"\
+        Select a table\");\n      const pool = mysqlPool(c);\n      try {\n      \
+        \  const connection = await pool.promise().getConnection();\n        try {\n\
+        \          const [columns] = await connection.query(\n            \"SELECT\
+        \ COLUMN_NAME name,DATA_TYPE type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=?\
+        \ AND TABLE_NAME=? ORDER BY ORDINAL_POSITION\",\n            [c.database,\
+        \ c.table],\n          );\n          schema = columns as { name: string; type:\
+        \ string }[];\n          await connection.query(\n            \"SET TRANSACTION\
+        \ ISOLATION LEVEL REPEATABLE READ\",\n          );\n          await connection.query(\"\
+        START TRANSACTION READ ONLY\");\n          const stream = (\n            connection.connection\
+        \ as unknown as mysql.PoolConnection\n          )\n            .query(\"SELECT\
+        \ * FROM \" + identifier(c.table, kind))\n            .stream({ highWaterMark:\
+        \ 100 });\n          const raw = connection.connection as any;\n         \
+        \ const failed = (error: Error) => stream.destroy(error);\n          const\
+        \ ended = () =>\n            stream.destroy(\n              new Error(\n \
+        \               \"Source connection ended before the snapshot completed\"\
+        ,\n              ),\n            );\n          raw.on(\"error\", failed);\n\
+        \          raw.on(\"end\", ended);\n          const timer = setTimeout(\n\
+        \            () =>\n              stream.destroy(new Error(\"Snapshot exceeded\
+        \ import time limit\")),\n            Number(c.timeoutMs || 120000),\n   \
+        \       );\n          try {\n            for await (const row of stream) await\
+        \ write(row);\n          } finally {\n            clearTimeout(timer);\n \
+        \           raw.off(\"error\", failed);\n            raw.off(\"end\", ended);\n\
+        \          }\n          await connection.commit();\n        } finally {\n\
+        \          connection.release();\n        }\n      } finally {\n        await\
+        \ pool.promise().end();\n      }\n    } else if (kind === \"postgres\") {\n\
+        \      assert(c.table, \"Select a table\");\n      const pool = pgPool(c);\n\
+        \      let client: pg.PoolClient | undefined;\n      try {\n        client\
+        \ = await pool.connect();\n        schema = (\n          await client.query(\n\
+        \            \"SELECT column_name name,data_type type FROM information_schema.columns\
+        \ WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position\",\n \
+        \           [c.schema || \"public\", c.table],\n          )\n        ).rows;\n\
+        \        await client.query(\"BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY\"\
+        );\n        await client.query(\n          \"DECLARE foundry_cursor NO SCROLL\
+        \ CURSOR FOR SELECT * FROM \" +\n            identifier(c.schema || \"public\"\
+        , kind) +\n            \".\" +\n            identifier(c.table, kind),\n \
+        \       );\n        while (true) {\n          const r = await client.query(\"\
+        FETCH 1000 FROM foundry_cursor\");\n          if (!r.rows.length) break;\n\
+        \          for (const row of r.rows) await write(row);\n        }\n      \
+        \  await client.query(\"COMMIT\");\n      } finally {\n        client?.release();\n\
+        \        await pool.end();\n      }\n    } else if (kind === \"rest\") {\n\
+        \      let url = checkedURL(c.url),\n        page = 0,\n        seen = new\
+        \ Set<string>();\n      if (c.pagination === \"offset\") {\n        url.searchParams.set(c.offsetParam\
+        \ || \"offset\", \"0\");\n        url.searchParams.set(\n          c.limitParam\
+        \ || \"limit\",\n          String(c.pageSize || 100),\n        );\n      }\n\
+        \      while (page++ < 1000) {\n        assert(!seen.has(url.href), \"Pagination\
+        \ repeated a URL\");\n        seen.add(url.href);\n        const response\
+        \ = await fetch(url, {\n          headers: headers(c),\n          redirect:\
+        \ \"error\",\n          signal: AbortSignal.timeout(30000),\n        });\n\
+        \        assert(response.ok, `Source returned HTTP ${response.status}`);\n\
+        \        const data = (await response.json()) as any,\n          rows = c.itemsPath\
+        \ ? atPath(data, c.itemsPath) : data;\n        assert(Array.isArray(rows),\
+        \ \"REST items must be an array\");\n        for (const row of rows) await\
+        \ write(row);\n        if (c.pagination === \"next\" && atPath(data, c.nextPath\
+        \ || \"next\")) {\n          const next = checkedURL(\n            new URL(atPath(data,\
+        \ c.nextPath || \"next\"), url).href,\n          );\n          assert(\n \
+        \           next.origin === url.origin,\n            \"Pagination must stay\
+        \ on the configured origin\",\n          );\n          url = next;\n     \
+        \   } else if (\n          c.pagination === \"cursor\" &&\n          atPath(data,\
+        \ c.nextPath || \"next_cursor\")\n        ) {\n          url = new URL(url);\n\
+        \          url.searchParams.set(\n            c.cursorParam || \"cursor\"\
+        ,\n            String(atPath(data, c.nextPath || \"next_cursor\")),\n    \
+        \      );\n        } else if (\n          c.pagination === \"offset\" &&\n\
+        \          rows.length >= Number(c.pageSize || 100)\n        ) {\n       \
+        \   url = new URL(url);\n          url.searchParams.set(\n            c.offsetParam\
+        \ || \"offset\",\n            String(page * Number(c.pageSize || 100)),\n\
+        \          );\n          url.searchParams.set(\n            c.limitParam ||\
+        \ \"limit\",\n            String(c.pageSize || 100),\n          );\n     \
+        \   } else break;\n        if (page === 1000) throw new Error(\"Pagination\
+        \ exceeded 1000 pages\");\n      }\n    } else if (kind === \"stripe\") {\n\
+        \      schema = await importStripe(c, write);\n    } else if (kind === \"\
+        workos\") {\n      schema = await importWorkos(c, write);\n    } else if (kind\
+        \ === \"posthog\") {\n      schema = await importPosthog(c, write);\n    }\
+        \ else if (kind === \"neo4j\") {\n      schema = await importNeo4j(c, write);\n\
+        \    } else if (kind === \"s3\") {\n      assert(c.key, \"Select an object\
+        \ key\");\n      const client = s3(c);\n      try {\n        const result\
+        \ = await client.send(\n          new GetObjectCommand({ Bucket: c.bucket,\
+        \ Key: c.key }),\n        );\n        assert(result.Body, \"Empty S3 object\"\
+        );\n        for await (const chunk of result.Body as any) {\n          if\
+        \ (!out.write(chunk)) await once(out, \"drain\");\n          if (Date.now()\
+        \ - lastProgress > 1000) {\n            lastProgress = Date.now();\n     \
+        \       await progress?.({\n              message: \"Downloading complete\
+        \ file\",\n              bytes: out.bytesWritten,\n            });\n     \
+        \     }\n        }\n        out.end();\n        await once(out, \"finish\"\
+        );\n        await progress?.({\n          message: \"Profiling complete snapshot\"\
+        ,\n          bytes: out.bytesWritten,\n        });\n        return { file,\
+        \ records: count };\n      } finally {\n        client.destroy();\n      }\n\
+        \    } else throw new Error(\"Upload files through the upload endpoint\");\n\
+        \    out.end();\n    await once(out, \"finish\");\n    await progress?.({\n\
+        \      message: \"Profiling complete snapshot\",\n      records: count,\n\
+        \    });\n    return { file, records: count, schema: count === 0 ? schema\
+        \ : undefined };\n  } catch (e) {\n    out.destroy();\n    await finished(out).catch(()\
+        \ => {});\n    await rm(path, { force: true }).catch(() => {});\n    throw\
+        \ e;\n  }\n}\nREVIEWED_EOF\n"
+      shell: bash
+    - name: Apply reviewed tests/postgres-discovery.test.ts
+      run: "cat > tests/postgres-discovery.test.ts <<'REVIEWED_EOF'\nimport { beforeAll,\
+        \ afterAll, describe, it, expect } from \"vitest\";\nimport pg from \"pg\"\
+        ;\nimport { discover } from \"../apps/api/src/connectors.js\";\nimport { createApp\
+        \ } from \"../apps/api/src/app.js\";\nimport { MemoryStore } from \"../apps/api/src/store.js\"\
+        ;\n\n// Owned fixture only: never point this suite at an existing/user database.\n\
+        describe.runIf(process.env.TEST_POSTGRES_DISCOVERY === \"1\")(\"owned PostgreSQL\
+        \ fixture\", () => {\nconst connection = { host: \"127.0.0.1\", port: 5432,\
+        \ database: \"proof\", user: \"postgres\", password: \"fixture-only\", tls:\
+        \ false };\nconst reader = { ...connection, user: \"foundry_readonly\", password:\
+        \ \"fixture-reader\" };\nconst schema = \"proof_owned\";\nconst admin = new\
+        \ pg.Pool(connection);\nconst keys = [\n  { table_schema: schema, table_name:\
+        \ \"customers\", column_name: \"customer_id\", constraint_type: \"PRIMARY\
+        \ KEY\" },\n  { table_schema: schema, table_name: \"orders\", column_name:\
+        \ \"order_id\", constraint_type: \"PRIMARY KEY\" },\n  { table_schema: schema,\
+        \ table_name: \"orders\", column_name: \"customer_id\", constraint_type: \"\
+        FOREIGN KEY\" },\n];\nconst foreignKeys = [{ table_schema: schema, table_name:\
+        \ \"orders\", column_name: \"customer_id\", referenced_schema: schema, referenced_table:\
+        \ \"customers\", referenced_column: \"customer_id\" }];\nbeforeAll(async ()\
+        \ => {\n  console.log(\"Owned PostgreSQL runtime\", (await admin.query(\"\
+        SELECT version() AS version\")).rows[0].version);\n  await admin.query(`CREATE\
+        \ SCHEMA proof_owned;\n    CREATE TABLE proof_owned.customers(customer_id\
+        \ text PRIMARY KEY);\n    CREATE TABLE proof_owned.orders(order_id text PRIMARY\
+        \ KEY, customer_id text REFERENCES proof_owned.customers);\n    CREATE TABLE\
+        \ proof_owned.hidden(secret_id text PRIMARY KEY);\n    CREATE ROLE foundry_readonly\
+        \ LOGIN PASSWORD 'fixture-reader';\n    GRANT CONNECT ON DATABASE proof TO\
+        \ foundry_readonly;\n    GRANT USAGE ON SCHEMA proof_owned TO foundry_readonly;\n\
+        \    GRANT SELECT ON proof_owned.customers, proof_owned.orders TO foundry_readonly;`);\n\
+        });\nbeforeAll(async () => {\n  await admin.query(`CREATE SCHEMA proof_edges;\n\
+        \    CREATE SCHEMA proof_other;\n    CREATE TABLE proof_edges.parent(tenant\
+        \ text, id text, PRIMARY KEY(tenant,id));\n    CREATE TABLE proof_edges.child(id\
+        \ text PRIMARY KEY, owner_id text, owner_tenant text,\n      CONSTRAINT shared_fk\
+        \ FOREIGN KEY(owner_tenant,owner_id) REFERENCES proof_edges.parent(tenant,id));\n\
+        \    CREATE TABLE proof_edges.solo(id text PRIMARY KEY);\n    CREATE TABLE\
+        \ proof_edges.second(id text PRIMARY KEY, solo_id text,\n      CONSTRAINT\
+        \ shared_fk FOREIGN KEY(solo_id) REFERENCES proof_edges.solo(id));\n    CREATE\
+        \ TABLE proof_other.parent(id text PRIMARY KEY);\n    CREATE TABLE proof_other.child(id\
+        \ text PRIMARY KEY, parent_id text,\n      CONSTRAINT shared_fk FOREIGN KEY(parent_id)\
+        \ REFERENCES proof_other.parent(id));\n    CREATE TABLE proof_edges.hidden_origin(id\
+        \ text PRIMARY KEY, parent_id text REFERENCES proof_edges.solo(id));\n   \
+        \ CREATE TABLE proof_edges.hidden_target(id text PRIMARY KEY);\n    CREATE\
+        \ TABLE proof_edges.visible_child(id text PRIMARY KEY, secret_ref text REFERENCES\
+        \ proof_edges.hidden_target(id));\n    GRANT USAGE ON SCHEMA proof_edges,proof_other\
+        \ TO foundry_readonly;\n    GRANT SELECT ON proof_edges.parent,proof_edges.child,proof_edges.solo,proof_edges.second,\n\
+        \      proof_other.parent,proof_other.child,proof_edges.visible_child TO foundry_readonly;`);\n\
+        });\nafterAll(async () => { await admin.end(); });\nconst edge = (table_name:\
+        \ string, column_name: string, referenced_table: string, referenced_column:\
+        \ string, table_schema = \"proof_edges\", referenced_schema = \"proof_edges\"\
+        ) => ({table_schema,table_name,column_name,referenced_schema,referenced_table,referenced_column});\n\
+        const composite = [edge(\"child\",\"owner_tenant\",\"parent\",\"tenant\"),edge(\"\
+        child\",\"owner_id\",\"parent\",\"id\")];\n\ndescribe(\"owned Postgres read-only\
+        \ discovery\", () => {\n  it(\"owner control exposes explicit DDL keys and\
+        \ FK\", async () => {\n    const d: any = await discover(\"postgres\", connection);\n\
+        \    expect(d.keys.filter((r: any) => r.table_schema === schema && r.table_name\
+        \ !== \"hidden\")).toEqual(expect.arrayContaining(keys));\n    expect(d.foreignKeys.filter((r:\
+        \ any) => r.table_schema === schema)).toEqual(foreignKeys);\n  });\n  it(\"\
+        reader visibility control lists only selectable tables\", async () => {\n\
+        \    const d: any = await discover(\"postgres\", reader);\n    expect(d.tables.filter((r:\
+        \ any) => r.schema === schema).map((r: any) => r.name).sort()).toEqual([\"\
+        customers\", \"orders\"]);\n    expect(d.keys.some((r: any) => r.table_schema\
+        \ === schema && r.table_name === \"hidden\")).toBe(false);\n  });\n  it(\"\
+        reader exposes the same declared keys and FK as explicit DDL\", async () =>\
+        \ {\n    const d: any = await discover(\"postgres\", reader);\n    expect(d.keys.filter((r:\
+        \ any) => r.table_schema === schema)).toEqual(expect.arrayContaining(keys));\n\
+        \    expect(d.foreignKeys.filter((r: any) => r.table_schema === schema)).toEqual(foreignKeys);\n\
+        \  });\n  it(\"actual source API persists the selected reader table key evidence\"\
+        , async () => {\n    const store = new MemoryStore();\n    const app = await\
+        \ createApp(store);\n    try {\n      await app.ready();\n      const me =\
+        \ await app.inject({ method: \"GET\", url: \"/api/v1/me\" });\n      expect(me.statusCode).toBe(200);\n\
+        \      const scope = me.json().workspaces[0].id;\n      const response = await\
+        \ app.inject({ method: \"POST\", url: `/api/v1/workspaces/${scope}/sources`,\
+        \ payload: { name: \"Owned readonly orders\", kind: \"postgres\", config:\
+        \ { ...reader, schema, table: \"orders\" } } });\n      expect(response.statusCode).toBe(200);\n\
+        \      const id = response.json().id;\n      const stored = await store.get(scope,\
+        \ id);\n      expect(stored?.data.discovery.foreignKeys).toEqual(foreignKeys);\n\
+        \      expect(stored?.data.discovery.keys).toHaveLength(2);\n      expect(stored?.data.discovery.keys).toEqual(expect.arrayContaining(keys.filter(r\
+        \ => r.table_name === \"orders\")));\n    } finally { await app.close(); }\n\
+        \  });\n});\n\ndescribe(\"owned PostgreSQL catalog boundaries\", () => {\n\
+        \  it(\"preserves composite FK column pairing for owner and SELECT-only reader\"\
+        , async () => {\n    for (const credentials of [connection,reader]) {\n  \
+        \    const d: any=await discover(\"postgres\",credentials);\n      expect(d.foreignKeys.filter((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"child\")).toEqual(composite);\n      expect(d.keys.filter((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"parent\")).toEqual([\n        {table_schema:\"\
+        proof_edges\",table_name:\"parent\",column_name:\"tenant\",constraint_type:\"\
+        PRIMARY KEY\"},\n        {table_schema:\"proof_edges\",table_name:\"parent\"\
+        ,column_name:\"id\",constraint_type:\"PRIMARY KEY\"}\n      ]);\n    }\n \
+        \ });\n  it(\"does not cross-pair equal FK constraint names on different tables\"\
+        , async () => {\n    const d: any=await discover(\"postgres\",reader);\n \
+        \   expect(d.foreignKeys.filter((r:any)=>r.table_schema===\"proof_edges\"\
+        &&r.table_name===\"second\")).toEqual([edge(\"second\",\"solo_id\",\"solo\"\
+        ,\"id\")]);\n  });\n  it(\"keeps same constraint names in another schema separate\"\
+        , async () => {\n    const d: any=await discover(\"postgres\",reader);\n \
+        \   expect(d.foreignKeys.filter((r:any)=>r.table_schema===\"proof_other\"\
+        )).toEqual([edge(\"child\",\"parent_id\",\"parent\",\"id\",\"proof_other\"\
+        ,\"proof_other\")]);\n  });\n  it(\"does not expose unreadable referencing\
+        \ tables through catalog keys or FKs\", async () => {\n    const d: any=await\
+        \ discover(\"postgres\",reader);\n    expect(d.tables.some((r:any)=>r.schema===\"\
+        proof_edges\"&&r.name===\"hidden_origin\")).toBe(false);\n    expect(d.keys.some((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"hidden_origin\")).toBe(false);\n    expect(d.foreignKeys.some((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"hidden_origin\")).toBe(false);\n  });\n  it(\"\
+        does not reveal unreadable referenced relation names or columns\", async ()\
+        \ => {\n    const d: any=await discover(\"postgres\",reader);\n    expect(d.foreignKeys.filter((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"visible_child\")).toEqual([]);\n    expect(d.keys.some((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"hidden_target\")).toBe(false);\n    const\
+        \ owner: any=await discover(\"postgres\",connection);\n    expect(owner.foreignKeys.filter((r:any)=>r.table_schema===\"\
+        proof_edges\"&&r.table_name===\"visible_child\")).toEqual([edge(\"visible_child\"\
+        ,\"secret_ref\",\"hidden_target\",\"id\")]);\n  });\n});\n\n});\nREVIEWED_EOF\n"
+      shell: bash
+    - name: Required typecheck
+      run: pnpm typecheck 2>&1 | tee "$RUNNER_TEMP/helix-typecheck.log"
+      shell: bash
+    - name: Required full suite including owned Postgres native boundary
+      run: pnpm test --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/helix-candidate-junit.xml"
+        2>&1 | tee "$RUNNER_TEMP/helix-test.log"
+      env:
+        TEST_POSTGRES_DISCOVERY: '1'
+        NODE_ENV: test
+        INLINE_WORKER: 'false'
+        ENCRYPTION_KEY: owned-proof-encryption-key-32-characters
+        INTERNAL_KEY: owned-proof-internal-key-32-characters
+        DATA_DIR: /tmp/helix-readonly-owned
+      shell: bash
+    - name: Required build
+      run: pnpm build 2>&1 | tee "$RUNNER_TEMP/helix-build.log"
+      shell: bash
+    - name: Verify native cases and full suite results
+      run: 'python3 - <<''COUNTS''
+
+        import os,pathlib,xml.etree.ElementTree as E,json
+
+        r=E.parse(pathlib.Path(os.environ[''RUNNER_TEMP''],''helix-candidate-junit.xml'')).getroot()
+
+        cases=list(r.iter(''testcase''));native=[x for x in cases if x.attrib.get(''classname'')==''tests/postgres-discovery.test.ts'']
+
+        assert len(native)==9,len(native)
+
+        assert all(x.find(''failure'') is None and x.find(''error'') is None and x.find(''skipped'')
+        is None for x in native)
+
+        assert not list(r.iter(''failure'')) and not list(r.iter(''error''))
+
+        result={''allCases'':len(cases),''nativeCases'':len(native),''failures'':0,''errors'':0,''skipped'':len(list(r.iter(''skipped'')))}
+
+        print(result);pathlib.Path(os.environ[''RUNNER_TEMP''],''helix-counts.json'').write_text(json.dumps(result,indent=2))
+
+        COUNTS'
+      shell: bash
+    - name: Verify complete tracked manifest and print untracked allowlist
+      if: always()
+      run: "python3 - <<'GUARD'\nimport subprocess,hashlib,json,os,pathlib\nbefore=json.loads(pathlib.Path(os.environ['RUNNER_TEMP'],'helix-tracked-before.json').read_text())\n\
+        changed=[]\nfor f,h in before.items():\n p=pathlib.Path(f)\n if not p.is_file()\
+        \ or hashlib.sha256(p.read_bytes()).hexdigest()!=h:changed.append(f)\nprint('Tracked\
+        \ changes:',changed)\nassert changed==['apps/api/src/connectors.ts'],changed\n\
+        assert hashlib.sha256(pathlib.Path('apps/api/src/connectors.ts').read_bytes()).hexdigest()==\"\
+        ad45dfc242a046881528baac664c542dd3dc44ee543bc5386d1b80ff4ed50b09\"\nuntracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard']).decode().splitlines()\n\
+        print('Complete untracked list:',untracked)\nassert untracked==['tests/postgres-discovery.test.ts'],untracked\n\
+        assert hashlib.sha256(pathlib.Path('tests/postgres-discovery.test.ts').read_bytes()).hexdigest()==\"\
+        f4f61fcd54b99d5ac99fa41bee94dbaa520861541c5316218a53fc093c0678f6\"\nprint('All\
+        \ other tracked hashes unchanged; exact reviewed source/test identities preserved.')\n\
+        GUARD"
+      shell: bash
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: helix-postgres-candidate-qualification
+        path: '${{ runner.temp }}/helix-*.log
+
+          ${{ runner.temp }}/helix-*.json
+
+          ${{ runner.temp }}/helix-*.xml
+
+          apps/api/src/connectors.ts
+
+          tests/postgres-discovery.test.ts'
